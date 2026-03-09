@@ -36,12 +36,27 @@ It is built for long-context research workflows: reading papers, revisiting figu
 - `Build PDF reader`: build a local cache from attached PDFs so the team can retrieve indexed sections, figures, and formulas during discussion
 - `Discussion Feed`: follow the seminar as a live chat timeline with status updates, workpackage markers, and export notices
 
+## Demo
+
+### Live discussion interface
+
+<p align="center">
+  <img src="demo/demo1.png" alt="Cyber Colloquium live discussion demo" width="900" />
+</p>
+
+### Discussion console and workflow setup
+
+<p align="center">
+  <img src="demo/demo2.png" alt="Cyber Colloquium workflow configuration demo" width="900" />
+</p>
+
 ## Project Structure
 
 ```text
 .
 |-- app.py
 |-- app_config.example.json
+|-- demo/
 |-- requirements.txt
 |-- Overall Picture.png
 |-- post.png

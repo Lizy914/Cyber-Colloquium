@@ -15,6 +15,7 @@ from .attachments import (
     split_literature_review_packets,
     summarize_snippet_coverage,
 )
+from .language import detect_primary_language, language_name
 from .llm_client import LLMError, OpenAICompatibleClient
 from .pdf_reader import (
     build_reader_reference_attachments,
@@ -52,35 +53,36 @@ MAX_FOLLOWUP_ATTEMPTS = 2
 MAX_LITERATURE_REVIEW_BATCHES = 3
 
 ACADEMIC_COLLABORATION_PRINCIPLE = (
-    "这是一个通用学术研究团队。具体领域由用户任务决定，可以是量化金融、图像处理、物理学或其他学科。"
-    " 团队目标是通过多模型分工、交叉质疑、相互纠错和结构化日志沉淀来降低单模型幻觉，提高结论可靠性。"
+    "This is a general academic research team. The specific field is determined by the user's task and may involve quantitative finance, image processing, physics, or another discipline."
+    " The team objective is to reduce single-model hallucinations and improve reliability through division of labor, cross-questioning, mutual correction, and structured logging."
 )
 
 MEETING_RULES = [
-    "重要主张必须绑定证据、理论依据，或明确标注待验证。",
-    "共识、争议、猜测、未决问题必须分开记录。",
-    "模型只处理被分配的子问题，不重复回放冗长历史。",
-    "发现幻觉、定义不清、证据不足时必须显式登记。",
-    "若存在未决问题或争议，主流程结束后必须追加深挖回合。",
+    "Important claims must be tied to evidence, theoretical support, or explicitly marked as pending verification.",
+    "Consensus, conflicts, hypotheses, and open questions must be recorded separately.",
+    "Each role should handle only its assigned subproblem and avoid replaying long history.",
+    "Hallucinations, vague definitions, and missing evidence must be logged explicitly.",
+    "If open questions or conflicts remain after the main flow, follow-up discussion passes are mandatory.",
 ]
 
-LEAD_ASSIGNMENT_PROMPT = f"""你是这个模拟学术研讨团队的总负责人，只负责拆解研究任务和分工，不直接做具体分析。
+LEAD_ASSIGNMENT_PROMPT = f"""You are the lead of this simulated academic seminar team. Your only job is to decompose the research task and assign work. Do not perform the analysis yourself.
 
 {ACADEMIC_COLLABORATION_PRINCIPLE}
 
-请根据团队成员的专长进行派工，输出格式必须尽量接近：
-研究目标：...
-领域判断：...
-1. 子问题标题 | 主责: 角色名 | 复核: 角色名 | 说明: 为什么这么分配
-2. 子问题标题 | 主责: 角色名 | 复核: 角色名 | 说明: 为什么这么分配
-派工原则：...
+Use the team's specialties to delegate work. Keep the schema labels below in English exactly as written:
+Research Goal: ...
+Domain: ...
+1. Subproblem title | Owner: role name | Reviewer: role name | Rationale: why this assignment fits
+2. Subproblem title | Owner: role name | Reviewer: role name | Rationale: why this assignment fits
+Assignment Principles: ...
 
-要求：
-1. 每个子问题都必须是具体、可执行、可复核的学术子任务。
-2. 尽量让派工和角色专长匹配。
-3. 每个子问题都要有主责角色，优先再指定一个复核角色。
-4. 不要替执行角色直接写分析结论。
-5. 全文控制在 320 字以内。
+Rules:
+1. The explanatory prose after each English label should follow the user's language.
+2. Each subproblem must be specific, executable, and reviewable.
+3. Match assignments to specialties whenever possible.
+4. Each subproblem must have an Owner and preferably a Reviewer.
+5. Do not write the analysis conclusions for the assignees.
+6. Keep the whole output within 320 words.
 """
 
 HOST_COORDINATION_PROMPT = f"""你是这个模拟学术研讨团队的主持人，只负责统筹规划和协作节奏，不直接给出研究结论。
@@ -371,6 +373,7 @@ class DiscussionOrchestrator:
         self.cached_pdf_reader_context = ""
         self.latest_result: DiscussionResult | None = None
         self.latest_state: MeetingState | None = None
+        self.output_language = "en"
 
         if self.report_provider is None:
             self.report_provider = next((provider for provider in enabled if provider is not self.lead_provider), None)
@@ -387,6 +390,7 @@ class DiscussionOrchestrator:
     ) -> DiscussionResult:
         del rounds
 
+        self.output_language = detect_primary_language(user_request)
         result = DiscussionResult()
         self.latest_result = result
         state = self._initialize_state(user_request)
@@ -400,18 +404,24 @@ class DiscussionOrchestrator:
             figure_count = sum(1 for item in self.reader_references if item.kind == "figure")
             formula_count = sum(1 for item in self.reader_references if item.kind == "formula")
             on_status(
-                f"Loaded PDF reader cache: {section_count} sections, {figure_count} figures, {formula_count} formulas are available for retrieval during discussion."
+                self._tr(
+                    f"已加载 PDF Reader 缓存：可在讨论中检索 {section_count} 个章节、{figure_count} 张图示、{formula_count} 条公式。",
+                    f"Loaded PDF reader cache: {section_count} sections, {figure_count} figures, {formula_count} formulas are available for retrieval during discussion.",
+                )
             )
             if formula_count == 0:
                 on_status(
-                    "The loaded PDF reader cache does not contain formula references yet. Rebuild the PDF reader cache to refresh sections, figures, and formulas."
+                    self._tr(
+                        "当前加载的 PDF Reader 缓存还没有公式索引。请重建 PDF Reader 缓存以刷新章节、图示和公式。",
+                        "The loaded PDF reader cache does not contain formula references yet. Rebuild the PDF reader cache to refresh sections, figures, and formulas.",
+                    )
                 )
 
         successful_messages: list[DiscussionMessage] = []
         log_messages: list[DiscussionMessage] = []
 
         if should_cancel is not None and should_cancel():
-            return self._build_cancelled_result(result, state, "Discussion was stopped manually.")
+            return self._build_cancelled_result(result, state, self._tr("讨论已被手动停止。", "Discussion was stopped manually."))
 
         assignments_text = self._render_fallback_assignments()
         workpackages = self._fallback_workpackages()
@@ -421,18 +431,18 @@ class DiscussionOrchestrator:
         if generate_literature_review:
             if self.literature_provider is not None and attachments:
                 if on_status is not None:
-                    on_status("Literature reviewer is generating the literature review")
+                    on_status(self._tr("综述专家正在生成文献综述", "Literature reviewer is generating the literature review"))
                 literature_message = self._generate_literature_review(user_request)
                 if not self._is_failed_message(literature_message):
                     result.literature_review = literature_message.content
                     literature_review_text = literature_message.content
                 self._push_message(result, successful_messages, on_message, literature_message)
             elif on_status is not None:
-                on_status("Literature review is enabled, but no usable literature reviewer or reference attachment was found. Skipping.")
+                on_status(self._tr("已启用文献综述，但未找到可用的综述专家或参考附件，已跳过。", "Literature review is enabled, but no usable literature reviewer or reference attachment was found. Skipping."))
 
         if self.lead_provider is not None:
             if on_status is not None:
-                on_status("Lead is decomposing the task based on team specialties")
+                on_status(self._tr("总负责人正在根据团队专长拆解任务", "Lead is decomposing the task based on team specialties"))
             lead_message = self._lead_assign(user_request, team_roster, literature_review_text)
             assignments_text = lead_message.content
             parsed = self._extract_workpackages(lead_message.content)
@@ -443,9 +453,9 @@ class DiscussionOrchestrator:
 
         if self.host_provider is not None:
             if should_cancel is not None and should_cancel():
-                return self._build_cancelled_result(result, state, "Discussion was stopped manually.")
+                return self._build_cancelled_result(result, state, self._tr("讨论已被手动停止。", "Discussion was stopped manually."))
             if on_status is not None:
-                on_status("Host is preparing the coordination plan")
+                on_status(self._tr("主持人正在准备协作安排", "Host is preparing the coordination plan"))
             host_message = self._host_coordinate(user_request, assignments_text, team_roster, state, literature_review_text)
             self._update_state_from_coordination(state, host_message.content)
             self._push_message(result, successful_messages, on_message, host_message)
@@ -478,7 +488,7 @@ class DiscussionOrchestrator:
 
         for workpackage in workpackages:
             if should_cancel is not None and should_cancel():
-                return self._build_cancelled_result(result, state, "Discussion was stopped manually.")
+                return self._build_cancelled_result(result, state, self._tr("讨论已被手动停止。", "Discussion was stopped manually."))
 
             owner = self._resolve_owner(workpackage.owner_name, fallback_index=workpackage.index - 1)
             reviewer = self._resolve_reviewer(workpackage.reviewer_name, owner)
@@ -486,7 +496,7 @@ class DiscussionOrchestrator:
             state.current_question = workpackage.display_text
 
             if on_status is not None:
-                on_status(f"Task {workpackage.index} started: {workpackage.display_text}")
+                    on_status(self._tr(f"任务 {workpackage.index} 已启动：{workpackage.display_text}", f"Task {workpackage.index} started: {workpackage.display_text}"))
 
             primary_snippets = self._select_relevant_snippets(
                 f"{user_request}\n{workpackage.display_text}\n{owner.specialty}\n{' '.join(state.open_questions[-3:])}",
@@ -518,7 +528,7 @@ class DiscussionOrchestrator:
 
             if reviewer is not None:
                 if should_cancel is not None and should_cancel():
-                    return self._build_cancelled_result(result, state, "Discussion was stopped manually.")
+                    return self._build_cancelled_result(result, state, self._tr("讨论已被手动停止。", "Discussion was stopped manually."))
 
                 reviewer_snippets = self._select_relevant_snippets(
                     f"{user_request}\n{workpackage.display_text}\n{reviewer.specialty}\n{primary_message.content}",
@@ -550,7 +560,7 @@ class DiscussionOrchestrator:
 
             checkpoint = self._create_checkpoint(state, label=workpackage.title, workpackage_index=workpackage.index)
             if on_status is not None:
-                on_status(f"Checkpoint {checkpoint.checkpoint_id} recorded: {checkpoint.label}")
+                    on_status(self._tr(f"{self._checkpoint_label(checkpoint.checkpoint_id)} 已记录：{checkpoint.label}", f"{self._checkpoint_label(checkpoint.checkpoint_id)} recorded: {checkpoint.label}"))
 
         self._run_consensus_followups(
             result=result,
@@ -568,14 +578,14 @@ class DiscussionOrchestrator:
         )
 
         if should_cancel is not None and should_cancel():
-            return self._build_cancelled_result(result, state, "Discussion was stopped manually.")
+            return self._build_cancelled_result(result, state, self._tr("讨论已被手动停止。", "Discussion was stopped manually."))
 
         if on_status is not None:
-            on_status("Reporter is synthesizing the research report from the meeting state")
+            on_status(self._tr("统稿人正在根据会议状态生成研究报告", "Reporter is synthesizing the research report from the meeting state"))
         result.final_summary = self._generate_report(user_request, team_roster, state, literature_review_text)
 
         if on_status is not None:
-            on_status("Reporter is drafting the meeting minutes from the meeting state")
+            on_status(self._tr("统稿人正在根据会议状态撰写会议纪要", "Reporter is drafting the meeting minutes from the meeting state"))
         result.meeting_minutes = self._generate_meeting_minutes(
             user_request=user_request,
             team_roster=team_roster,
@@ -590,9 +600,37 @@ class DiscussionOrchestrator:
         return MeetingState(
             topic=self._collapse_whitespace(self._truncate_text(user_request, 160)),
             goal=self._collapse_whitespace(self._truncate_text(user_request, 220)),
-            rules=list(MEETING_RULES),
-            current_stage="初始化",
-            current_question="等待总负责人拆解任务",
+            rules=self._localized_meeting_rules(),
+            current_stage="Initialization",
+            current_question="Waiting for the lead to decompose the task",
+        )
+
+    def _tr(self, zh_text: str, en_text: str) -> str:
+        del zh_text
+        return en_text
+
+    def _localized_meeting_rules(self) -> list[str]:
+        return [
+            "Important claims must be tied to evidence, theoretical support, or explicitly marked as pending verification.",
+            "Consensus, conflicts, hypotheses, and open questions must be recorded separately.",
+            "Each role should focus only on its assigned subproblem and avoid replaying long history.",
+            "If hallucinations, vague definitions, or missing evidence appear, they must be logged explicitly.",
+            "If open questions or conflicts remain after the main flow, follow-up discussion passes are mandatory.",
+        ]
+
+    def _language_policy(self) -> str:
+        if self.output_language == "zh":
+            return (
+                "Language requirement: the model-generated reply body, literature review body, report body, minutes body, and JSON string values should follow the same primary language as the user's request."
+                " The detected primary language is Chinese."
+                " Keep paper titles, model names, formulas, evidence IDs, and fixed template markers such as [Judgment], [Risk], and ## Coverage in their original form."
+                " System labels and framework text outside the generated reply body may remain in English."
+            )
+        return (
+            "Language requirement: the model-generated reply body, literature review body, report body, minutes body, and JSON string values should follow the same primary language as the user's request."
+            f" The detected primary language is {language_name(self.output_language)}."
+            " You may keep paper titles, model names, formulas, evidence IDs, and fixed template markers such as [Judgment], [Risk], and ## Coverage in their original form."
+            " System labels and framework text outside the generated reply body may remain in English."
         )
 
     def _lead_assign(
@@ -606,12 +644,12 @@ class DiscussionOrchestrator:
         reader_context = self._build_reader_context(user_request, self.lead_provider, max_chars=1800, max_items=4)
         reader_attachments = self._build_reader_attachments(user_request, self.lead_provider, max_items=2)
         prompt = (
-            f"用户任务：\n{user_request}\n\n"
-            f"团队成员与专长：\n{team_roster}\n\n"
-            f"相关资料片段：\n{render_attachment_snippets(snippets, max_chars=2200) or '无附件。'}\n\n"
-            f"PDF reader 索引检索：\n{reader_context}\n\n"
-            f"文献综述参考：\n{self._build_literature_context(literature_review_text, 1400)}\n\n"
-            "请输出工作拆解单并完成派工。"
+            f"User task:\n{user_request}\n\n"
+            f"Team roster and specialties:\n{team_roster}\n\n"
+            f"Relevant attachment snippets:\n{render_attachment_snippets(snippets, max_chars=2200) or 'No attachment snippets.'}\n\n"
+            f"PDF reader retrieval:\n{reader_context}\n\n"
+            f"Literature review context:\n{self._build_literature_context(literature_review_text, 1400)}\n\n"
+            "Generate the delegation plan using the fixed English schema labels."
         )
         content = self._chat(
             provider=self.lead_provider,
@@ -1266,8 +1304,8 @@ class DiscussionOrchestrator:
         client = OpenAICompatibleClient(provider)
         try:
             return client.chat(
-                system_prompt=system_prompt,
-                user_prompt=self._truncate_text(user_prompt, self._prompt_budget(provider)),
+                system_prompt=f"{self._language_policy()}\n\n{system_prompt}",
+                user_prompt=self._truncate_text(f"{self._language_policy()}\n\n{user_prompt}", self._prompt_budget(provider)),
                 attachments=attachments,
                 max_tokens=max_tokens,
                 max_continuations=max_continuations,
@@ -1299,10 +1337,21 @@ class DiscussionOrchestrator:
 
         repair_prompt = (
             f"{user_prompt}\n\n"
-            "你上一条输出格式不合格，存在内容过短、字段缺失或只输出标签的问题。"
-            f" 你的输出必须包含这些区块：{', '.join(required_sections)}。\n\n"
-            f"上一条输出：\n{self._truncate_text(content, 800)}\n\n"
-            "请严格按模板完整重写，不要省略任何区块。"
+            + self._tr(
+                "你上一条输出格式不合格，存在内容过短、字段缺失或只输出标签的问题。",
+                "Your previous output did not follow the required structure. It was too short, missed fields, or only repeated the labels.",
+            )
+            + " "
+            + self._tr(
+                f"你的输出必须包含这些区块：{', '.join(required_sections)}。\n\n",
+                f"Your output must contain these sections: {', '.join(required_sections)}.\n\n",
+            )
+            + self._tr("上一条输出：\n", "Previous output:\n")
+            + f"{self._truncate_text(content, 800)}\n\n"
+            + self._tr(
+                "请严格按模板完整重写，不要省略任何区块。",
+                "Rewrite the full answer strictly in the required template and do not omit any section.",
+            )
         )
         repaired = self._chat(
             provider=provider,
@@ -1349,7 +1398,7 @@ class DiscussionOrchestrator:
             return DiscussionMessage(
                 speaker=self.literature_provider.name,
                 role="assistant",
-                content=f"## Cached PDF Reader Digest\n\n{cached_context}",
+                content=f"## {self._tr('PDF Reader 缓存摘要', 'Cached PDF Reader Digest')}\n\n{cached_context}",
                 round_index=0,
                 model_name=self.literature_provider.model,
                 duty=LITERATURE_DUTY,
@@ -1359,7 +1408,10 @@ class DiscussionOrchestrator:
             return DiscussionMessage(
                 speaker=self.literature_provider.name,
                 role="assistant",
-                content="[Call Failed] No text attachment was available for literature review.",
+                content=self._tr(
+                    "[调用失败] 没有可用于文献综述的文本附件。",
+                    "[Call Failed] No text attachment was available for literature review.",
+                ),
                 round_index=0,
                 model_name=self.literature_provider.model,
                 duty=LITERATURE_DUTY,
@@ -1381,12 +1433,18 @@ class DiscussionOrchestrator:
             "## Evidence Anchors",
         ]
         for packet_index, packet in enumerate(packets, start=1):
-            packet_context = render_literature_review_context(packet, max_chars=4200) or "No literature packet was available."
+            packet_context = render_literature_review_context(packet, max_chars=4200) or self._tr(
+                "没有可用的文献分段。",
+                "No literature packet was available.",
+            )
             note_prompt = (
-                f"User task:\n{user_request}\n\n"
-                f"Packet {packet_index} of {len(packets)}\n\n"
+                f"{self._tr('用户任务', 'User task')}:\n{user_request}\n\n"
+                f"{self._tr('文献分段', 'Packet')} {packet_index} {self._tr('共', 'of')} {len(packets)}\n\n"
                 f"{packet_context}\n\n"
-                "Read this packet carefully and write packet-level reading notes."
+                + self._tr(
+                    "请仔细阅读这个分段，只写分段级阅读笔记。保留固定 Markdown 标题，但正文内容必须使用与用户提问相同的主语言。",
+                    "Read this packet carefully and write packet-level reading notes. Keep the fixed Markdown section titles, but write the section content in the same primary language as the user request.",
+                )
             )
             notes = self._chat_with_repair(
                 provider=self.literature_provider,
@@ -1396,22 +1454,24 @@ class DiscussionOrchestrator:
                 required_sections=required_packet_sections,
                 max_continuations=1,
             )
-            packet_notes.append(f"### Reading Packet {packet_index}\n\n{notes}")
+            packet_notes.append(f"### {self._tr('阅读分段', 'Reading Packet')} {packet_index}\n\n{notes}")
 
         synthesis_prompt = (
-            f"User task:\n{user_request}\n\n"
+            f"{self._tr('用户任务', 'User task')}:\n{user_request}\n\n"
             + (
-                "Primary whole-paper source:\n"
-                f"{cached_context}\n\n"
+                self._tr("整篇论文主来源：\n", "Primary whole-paper source:\n")
+                + f"{cached_context}\n\n"
                 if cached_context
                 else ""
             )
-            + "Packet-level coverage summary:\n"
-            f"{summarize_snippet_coverage(snippets)}\n\n"
-            "Packet-level reading notes:\n\n"
-            f"{self._truncate_text(chr(10).join(packet_notes), 12000)}\n\n"
-            "Synthesize these sources into one literature review for the downstream expert team. "
-            "Prefer the cached PDF reader digest for whole-paper structure, section order, and any figure or flowchart interpretation when it is available."
+            + self._tr("分段覆盖摘要：\n", "Packet-level coverage summary:\n")
+            + f"{summarize_snippet_coverage(snippets)}\n\n"
+            + self._tr("分段阅读笔记：\n\n", "Packet-level reading notes:\n\n")
+            + f"{self._truncate_text(chr(10).join(packet_notes), 12000)}\n\n"
+            + self._tr(
+                "请将这些材料整合为一份供后续专家组使用的文献综述。优先使用 PDF Reader 缓存摘要把握整篇结构、章节顺序，以及其中涉及的图示或流程图解释。保留固定 Markdown 标题，但正文内容必须使用与用户提问相同的主语言。",
+                "Synthesize these sources into one literature review for the downstream expert team. Prefer the cached PDF reader digest for whole-paper structure, section order, and any figure or flowchart interpretation when it is available. Keep the fixed Markdown section titles, but write the section content in the same primary language as the user request.",
+            )
         )
         content = self._chat_with_repair(
             provider=self.literature_provider,
@@ -1462,7 +1522,7 @@ class DiscussionOrchestrator:
                 return
 
             if on_status is not None:
-                on_status(f"Host is organizing unresolved-issue pass {pass_index}")
+                on_status(self._tr(f"主持人正在组织第 {pass_index} 轮未决问题深挖", f"Host is organizing unresolved-issue pass {pass_index}"))
 
             for workpackage in followups:
                 if should_cancel is not None and should_cancel():
@@ -1562,7 +1622,7 @@ class DiscussionOrchestrator:
 
                 checkpoint = self._create_checkpoint(state, label=workpackage.title, workpackage_index=workpackage.index)
                 if on_status is not None:
-                    on_status(f"Unresolved-issue checkpoint {checkpoint.checkpoint_id} updated: {checkpoint.label}")
+                    on_status(self._tr(f"未决问题 {self._checkpoint_label(checkpoint.checkpoint_id)} 已更新：{checkpoint.label}", f"Unresolved-issue {self._checkpoint_label(checkpoint.checkpoint_id)} updated: {checkpoint.label}"))
 
             if not self._has_remaining_followups(state, topic_attempts):
                 return
@@ -1609,8 +1669,8 @@ class DiscussionOrchestrator:
 
     def _update_state_from_assignment(self, state: MeetingState, assignment_text: str, workpackages: list[WorkPackage]) -> None:
         state.assignment_summary = self._truncate_text(assignment_text, 1000)
-        extracted_goal = self._extract_named_value(assignment_text, "研究目标")
-        extracted_domain = self._extract_named_value(assignment_text, "领域判断")
+        extracted_goal = self._extract_named_value(assignment_text, "研究目标") or self._extract_named_value(assignment_text, "Research Goal")
+        extracted_domain = self._extract_named_value(assignment_text, "领域判断") or self._extract_named_value(assignment_text, "Domain")
         if extracted_goal:
             state.goal = extracted_goal
         if extracted_domain:
@@ -1618,7 +1678,10 @@ class DiscussionOrchestrator:
         state.action_items = []
         for workpackage in workpackages:
             state.action_items.append(
-                f"任务 {workpackage.index}: {workpackage.title} -> 主责 {workpackage.owner_name or '待定'} / 复核 {workpackage.reviewer_name or '待定'}"
+                self._tr(
+                    f"任务 {workpackage.index}: {workpackage.title} -> 主责 {workpackage.owner_name or '待定'} / 复核 {workpackage.reviewer_name or '待定'}",
+                    f"Task {workpackage.index}: {workpackage.title} -> Owner {workpackage.owner_name or 'TBD'} / Reviewer {workpackage.reviewer_name or 'TBD'}",
+                )
             )
         state.current_question = workpackages[0].display_text if workpackages else state.current_question
 
@@ -1662,11 +1725,11 @@ class DiscussionOrchestrator:
 
     def _create_checkpoint(self, state: MeetingState, *, label: str, workpackage_index: int) -> MeetingCheckpoint:
         recent_entries = [entry for entry in state.log_entries if entry.workpackage_index == workpackage_index][-3:]
-        summary_parts = [f"完成阶段：{label}"]
+        summary_parts = [self._tr(f"完成阶段：{label}", f"Completed stage: {label}")]
         if recent_entries:
-            summary_parts.append("；".join(entry.headline for entry in recent_entries if entry.headline))
+            summary_parts.append(self._tr("；", "; ").join(entry.headline for entry in recent_entries if entry.headline))
         elif state.stable_consensus:
-            summary_parts.append("近期共识：" + "；".join(state.stable_consensus[-2:]))
+            summary_parts.append(self._tr("近期共识：", "Recent consensus: ") + self._tr("；", "; ").join(state.stable_consensus[-2:]))
 
         checkpoint = MeetingCheckpoint(
             checkpoint_id=f"CP{len(state.checkpoints) + 1}",
@@ -1696,35 +1759,35 @@ class DiscussionOrchestrator:
         relevant_entries = self._select_recent_entries(state, current_index)
 
         parts = [
-            f"主题: {state.topic or '未设定'}",
-            f"领域: {state.domain or '待讨论判断'}",
-            f"研究目标: {state.goal or '未提炼'}",
-            f"当前阶段: {state.current_stage or '未开始'}",
-            f"当前子问题: {workpackage.display_text if workpackage is not None else state.current_question or '未设定'}",
-            "会议规则:",
+            f"{self._tr('主题', 'Topic')}: {state.topic or self._tr('未设定', 'Not set')}",
+            f"{self._tr('领域', 'Domain')}: {state.domain or self._tr('待讨论判断', 'To be determined during discussion')}",
+            f"{self._tr('研究目标', 'Research Goal')}: {state.goal or self._tr('未提炼', 'Not distilled yet')}",
+            f"{self._tr('当前阶段', 'Current Stage')}: {state.current_stage or self._tr('未开始', 'Not started')}",
+            f"{self._tr('当前子问题', 'Current Workpackage')}: {workpackage.display_text if workpackage is not None else state.current_question or self._tr('未设定', 'Not set')}",
+            f"{self._tr('会议规则', 'Meeting Rules')}:",
             self._render_indexed_lines(state.rules, prefix="R", limit=5),
         ]
 
         if state.assignment_summary:
-            parts.append(f"派工摘要:\n{self._truncate_text(state.assignment_summary, 320)}")
+            parts.append(f"{self._tr('派工摘要', 'Assignment Summary')}:\n{self._truncate_text(state.assignment_summary, 320)}")
         if mode in {"host", "report", "minutes"} and state.coordination_summary:
-            parts.append(f"主持安排摘要:\n{self._truncate_text(state.coordination_summary, 260)}")
+            parts.append(f"{self._tr('主持安排摘要', 'Coordination Summary')}:\n{self._truncate_text(state.coordination_summary, 260)}")
         if checkpoint is not None:
-            parts.append(f"最近检查点 {checkpoint.checkpoint_id}: {checkpoint.summary}")
+            parts.append(f"{self._tr('最近检查点', 'Latest Checkpoint')} {checkpoint.checkpoint_id}: {checkpoint.summary}")
 
-        parts.append("稳定共识:")
+        parts.append(f"{self._tr('稳定共识', 'Stable Consensus')}:")
         parts.append(self._render_indexed_lines(state.stable_consensus, prefix="K", limit=6))
-        parts.append("当前争议:")
+        parts.append(f"{self._tr('当前争议', 'Active Conflicts')}:")
         parts.append(self._render_indexed_lines(state.conflicts, prefix="C", limit=5))
-        parts.append("未决问题:")
+        parts.append(f"{self._tr('未决问题', 'Open Questions')}:")
         parts.append(self._render_indexed_lines(state.open_questions, prefix="Q", limit=5))
 
         if mode in {"expert", "reviewer", "logger", "report", "minutes", "host"}:
-            parts.append("近期增量:")
+            parts.append(f"{self._tr('近期增量', 'Recent Updates')}:")
             parts.append(self._render_recent_entries(relevant_entries))
 
         if mode in {"report", "minutes", "host"}:
-            parts.append("行动项:")
+            parts.append(f"{self._tr('行动项', 'Action Items')}:")
             parts.append(self._render_indexed_lines(state.action_items, prefix="A", limit=6))
 
         return "\n\n".join(part for part in parts if part)
@@ -1828,11 +1891,11 @@ class DiscussionOrchestrator:
             return StructuredLogEntry(
                 workpackage_index=index,
                 workpackage_title=workpackage_title,
-                speaker=self.report_provider.name if self.report_provider else "\u7edf\u7a3f\u65e5\u5fd7",
+                speaker=self.report_provider.name if self.report_provider else self._tr("统稿日志", "Reporter Log"),
                 stage="log",
-                headline=f"\u4efb\u52a1 {index} \u521d\u59cb\u5316",
+                headline=self._tr(f"任务 {index} 初始化", f"Task {index} initialized"),
                 summary=fallback_text,
-                action_items_add=[f"\u542f\u52a8\u4efb\u52a1 {index}\uff1a{workpackage_title}"],
+                action_items_add=[self._tr(f"启动任务 {index}：{workpackage_title}", f"Start task {index}: {workpackage_title}")],
             )
 
         summary = self._collapse_whitespace(self._truncate_text(source_message.content, 180))
@@ -1870,10 +1933,16 @@ class DiscussionOrchestrator:
                     consensus.append(line)
 
         if self._is_failed_message(source_message):
-            conflicts = [f"{source_message.speaker} \u5728\u4efb\u52a1 {index} \u7684\u8c03\u7528\u5931\u8d25\uff0c\u9700\u8981\u91cd\u8bd5\u6216\u66ff\u6362\u3002"]
-            questions = [f"\u662f\u5426\u9700\u8981\u4e3a\u4efb\u52a1 {index} \u66f4\u6362\u6a21\u578b\u6216\u7f29\u77ed\u4e0a\u4e0b\u6587\u3002"]
+            conflicts = [self._tr(
+                f"{source_message.speaker} 在任务 {index} 的调用失败，需要重试或替换。",
+                f"{source_message.speaker} failed while working on task {index}; retry or model replacement is needed.",
+            )]
+            questions = [self._tr(
+                f"是否需要为任务 {index} 更换模型或缩短上下文。",
+                f"Should task {index} switch models or shorten the context window?",
+            )]
             consensus = []
-            actions = [f"\u91cd\u8bd5\u4efb\u52a1 {index}\uff1a{workpackage_title}"]
+            actions = [self._tr(f"重试任务 {index}：{workpackage_title}", f"Retry task {index}: {workpackage_title}")]
 
         evidence_cards = [
             EvidenceCard(
@@ -1897,32 +1966,32 @@ class DiscussionOrchestrator:
             consensus_add=consensus[:2],
             conflicts_add=conflicts[:2],
             open_questions_add=questions[:2],
-            action_items_add=(actions[:2] if actions else [f"\u7ee7\u7eed\u63a8\u8fdb\u4efb\u52a1 {index}\uff1a{workpackage_title}"]),
+            action_items_add=(actions[:2] if actions else [self._tr(f"继续推进任务 {index}：{workpackage_title}", f"Continue task {index}: {workpackage_title}")]),
             evidence_add=evidence_cards,
             redundant=False,
         )
 
     def _log_message_from_entry(self, entry: StructuredLogEntry) -> DiscussionMessage:
-        lines = [f"- \u6458\u8981\uff1a{entry.summary}"]
+        lines = [f"- {self._tr('摘要', 'Summary')}: {entry.summary}"]
         if entry.consensus_add:
-            lines.append("- \u5171\u8bc6\u589e\u91cf\uff1a" + "\uff1b".join(entry.consensus_add[:3]))
+            lines.append(f"- {self._tr('共识增量', 'Consensus delta')}: " + self._tr("；", "; ").join(entry.consensus_add[:3]))
         if entry.conflicts_add:
-            lines.append("- \u4e89\u8bae\u589e\u91cf\uff1a" + "\uff1b".join(entry.conflicts_add[:3]))
+            lines.append(f"- {self._tr('争议增量', 'Conflict delta')}: " + self._tr("；", "; ").join(entry.conflicts_add[:3]))
         if entry.open_questions_add:
-            lines.append("- \u672a\u51b3\u95ee\u9898\uff1a" + "\uff1b".join(entry.open_questions_add[:3]))
+            lines.append(f"- {self._tr('未决问题', 'Open questions')}: " + self._tr("；", "; ").join(entry.open_questions_add[:3]))
         if entry.action_items_add:
-            lines.append("- \u4e0b\u4e00\u6b65\uff1a" + "\uff1b".join(entry.action_items_add[:3]))
+            lines.append(f"- {self._tr('下一步', 'Next step')}: " + self._tr("；", "; ").join(entry.action_items_add[:3]))
         if entry.evidence_add:
             lines.append(
-                "- \u8bc1\u636e\u5f15\u7528\uff1a" + "\uff1b".join(
+                f"- {self._tr('证据引用', 'Evidence references')}: " + self._tr("；", "; ").join(
                     card.display_label or self._fallback_evidence_label(card.evidence_id, card.source)
                     for card in entry.evidence_add
                 )
             )
         if entry.redundant:
-            lines.append("- \u5224\u5b9a\uff1a\u672c\u6761\u53d1\u8a00\u65b0\u589e\u4fe1\u606f\u6709\u9650\u3002")
+            lines.append(self._tr("- 判定：本条发言新增信息有限。", "- Verdict: this message added limited new information."))
         return DiscussionMessage(
-            speaker=self.report_provider.name if self.report_provider else "\u7edf\u7a3f\u65e5\u5fd7",
+            speaker=self.report_provider.name if self.report_provider else self._tr("统稿日志", "Reporter Log"),
             role="assistant",
             content="\n".join(lines),
             round_index=entry.workpackage_index,
@@ -2022,69 +2091,76 @@ class DiscussionOrchestrator:
             if provider is not None and provider not in ordered:
                 ordered.append(provider)
         return "\n".join(
-            f"- {provider.name} | {provider.duty} | 专长: {provider.specialty or '未填写'}"
+            f"- {provider.name} | {provider.duty} | {self._tr('专长', 'Specialty')}: {provider.specialty or self._tr('未填写', 'Not set')}"
             for provider in ordered
-        ) or "- 暂无有效角色"
+        ) or self._tr("- 暂无有效角色", "- No active roles")
 
     def _build_literature_context(self, literature_review_text: str, max_chars: int) -> str:
         parts: list[str] = []
         if self.cached_pdf_reader_context.strip():
-            parts.append(f"[Cached PDF Reader Digest]\n{self.cached_pdf_reader_context.strip()}")
+            parts.append(f"[{self._tr('PDF Reader 缓存摘要', 'Cached PDF Reader Digest')}]\n{self.cached_pdf_reader_context.strip()}")
         if literature_review_text.strip():
             parts.append(literature_review_text.strip())
         if not parts:
-            return "Literature review was not generated and no cached PDF reader digest is available."
+            return self._tr(
+                "尚未生成文献综述，且没有可用的 PDF Reader 缓存摘要。",
+                "Literature review was not generated and no cached PDF reader digest is available.",
+            )
         return self._truncate_text("\n\n".join(parts), max_chars)
 
     def _build_checkpoint_timeline(self, state: MeetingState) -> str:
         if not state.checkpoints:
-            return "- \u6682\u65e0\u68c0\u67e5\u70b9\u3002"
+            return self._tr("- 暂无检查点。", "- No checkpoints yet.")
         return "\n".join(
-            f"- {self._checkpoint_label(checkpoint.checkpoint_id)} | \u4efb\u52a1 {checkpoint.workpackage_index} | {checkpoint.label} | {checkpoint.summary}"
+            f"- {self._checkpoint_label(checkpoint.checkpoint_id)} | {self._tr('任务', 'Task')} {checkpoint.workpackage_index} | {checkpoint.label} | {checkpoint.summary}"
             for checkpoint in state.checkpoints[-MAX_CHECKPOINTS:]
         )
 
     def _build_evidence_ledger(self, state: MeetingState) -> str:
         if not state.evidence_cards:
-            return "- \u6682\u65e0\u5df2\u56fa\u5316\u8bc1\u636e\u5f15\u7528\u3002"
+            return self._tr("- 暂无已固化证据引用。", "- No evidence references have been consolidated yet.")
         return "\n".join(
-            f"- {card.display_label or self._fallback_evidence_label(card.evidence_id, card.source)} | \u4efb\u52a1 {card.workpackage_index} | {card.summary}"
+            f"- {card.display_label or self._fallback_evidence_label(card.evidence_id, card.source)} | {self._tr('任务', 'Task')} {card.workpackage_index} | {card.summary}"
             for card in state.evidence_cards[-MAX_EVIDENCE_CARDS:]
         )
 
     def _checkpoint_label(self, checkpoint_id: str) -> str:
         number = ''.join(char for char in checkpoint_id if char.isdigit()) or checkpoint_id
-        return f"\u68c0\u67e5\u70b9 {number}"
+        return self._tr(f"检查点 {number}", f"Checkpoint {number}")
 
     def _state_item_label(self, prefix: str, index: int) -> str:
         mapping = {
-            "R": "\u89c4\u5219",
-            "K": "\u5171\u8bc6",
-            "C": "\u4e89\u8bae",
-            "Q": "\u672a\u51b3\u95ee\u9898",
-            "A": "\u884c\u52a8\u9879",
+            "R": self._tr("规则", "Rule"),
+            "K": self._tr("共识", "Consensus"),
+            "C": self._tr("争议", "Conflict"),
+            "Q": self._tr("未决问题", "Open Question"),
+            "A": self._tr("行动项", "Action Item"),
         }
         return f"{mapping.get(prefix, prefix)} {index}"
 
     def _snippet_source(self, snippet: AttachmentSnippet) -> str:
         parts = [snippet.attachment_name]
         if snippet.page_hint is not None:
-            parts.append(f"\u7b2c {snippet.page_hint} \u9875")
-        parts.append(f"\u5206\u6bb5 {snippet.chunk_index}")
+            parts.append(self._tr(f"第 {snippet.page_hint} 页", f"page {snippet.page_hint}"))
+        parts.append(self._tr(f"分段 {snippet.chunk_index}", f"chunk {snippet.chunk_index}"))
         return " | ".join(parts)
 
     def _snippet_display_label(self, snippet: AttachmentSnippet) -> str:
         number = ''.join(char for char in snippet.evidence_id if char.isdigit()) or snippet.evidence_id
         parts = [snippet.attachment_name]
         if snippet.page_hint is not None:
-            parts.append(f"\u7b2c {snippet.page_hint} \u9875")
-        parts.append(f"\u5206\u6bb5 {snippet.chunk_index}")
-        return f"\u8bc1\u636e {number}\uff08{'\uff0c'.join(parts)}\uff09"
+            parts.append(self._tr(f"第 {snippet.page_hint} 页", f"page {snippet.page_hint}"))
+        parts.append(self._tr(f"分段 {snippet.chunk_index}", f"chunk {snippet.chunk_index}"))
+        if self.output_language == "zh":
+            return f"证据 {number}（{'\uff0c'.join(parts)}）"
+        return f"Evidence {number} ({', '.join(parts)})"
 
     def _fallback_evidence_label(self, evidence_id: str, source: str) -> str:
         number = ''.join(char for char in evidence_id if char.isdigit()) or evidence_id
-        cleaned_source = source.replace('|', '\uff0c').strip()
-        return f"\u8bc1\u636e {number}\uff08{cleaned_source}\uff09" if cleaned_source else f"\u8bc1\u636e {number}"
+        cleaned_source = source.replace("|", self._tr("，", ",")).strip()
+        if self.output_language == "zh":
+            return f"证据 {number}（{cleaned_source}）" if cleaned_source else f"证据 {number}"
+        return f"Evidence {number} ({cleaned_source})" if cleaned_source else f"Evidence {number}"
 
 
     def _push_message(
@@ -2216,17 +2292,29 @@ class DiscussionOrchestrator:
         if self._resolution_reached(resolution_text):
             self._remove_matching(state.conflicts, [normalized_topic, topic])
             self._remove_matching(state.open_questions, [normalized_topic, topic])
-            self._merge_unique(state.stable_consensus, [f"\u56f4\u7ed5\u201c{normalized_topic}\u201d\u5df2\u5b8c\u6210\u8ffd\u52a0\u6df1\u6316\u5e76\u5f62\u6210\u9636\u6bb5\u5171\u8bc6\u3002"], limit=MAX_STATE_ITEMS)
+            self._merge_unique(
+                state.stable_consensus,
+                [self._tr(f"围绕“{normalized_topic}”已完成追加深挖并形成阶段共识。", f'Additional follow-up discussion on "{normalized_topic}" reached a provisional consensus.')],
+                limit=MAX_STATE_ITEMS,
+            )
         else:
-            self._merge_unique(state.action_items, [f"围绕“{normalized_topic}”仍需后续验证或实验。"], limit=MAX_STATE_ITEMS)
+            self._merge_unique(
+                state.action_items,
+                [self._tr(f"围绕“{normalized_topic}”仍需后续验证或实验。", f'Further validation or experiments are still needed for "{normalized_topic}".')],
+                limit=MAX_STATE_ITEMS,
+            )
             if normalized_topic not in state.open_questions and normalized_topic not in state.conflicts:
                 self._merge_unique(state.open_questions, [normalized_topic], limit=MAX_STATE_ITEMS)
 
     def _resolution_reached(self, resolution_text: str) -> bool:
         lowered = resolution_text.lower()
-        if any(token in resolution_text for token in ["仍未达成共识", "仍未解决", "保留争议", "需要更多工作"]):
+        if any(token in resolution_text for token in ["仍未达成共识", "仍未解决", "保留争议", "需要更多工作"]) or any(
+            token in lowered for token in ["still unresolved", "no consensus yet", "needs more work", "conflict remains"]
+        ):
             return False
-        return any(token in resolution_text for token in ["达成阶段共识", "可以暂时收束", "已形成共识", "暂时接受"])
+        return any(token in resolution_text for token in ["达成阶段共识", "可以暂时收束", "已形成共识", "暂时接受"]) or any(
+            token in lowered for token in ["provisional consensus", "can be closed for now", "consensus reached", "temporarily accepted"]
+        )
 
     def _select_recent_entries(self, state: MeetingState, current_index: int | None) -> list[StructuredLogEntry]:
         if not state.log_entries:
@@ -2238,16 +2326,16 @@ class DiscussionOrchestrator:
 
     def _render_recent_entries(self, entries: list[StructuredLogEntry]) -> str:
         if not entries:
-            return "- 暂无增量。"
+            return self._tr("- 暂无增量。", "- No recent updates.")
         return "\n".join(
-            f"- 任务 {entry.workpackage_index} | {entry.speaker} | {entry.headline} | {entry.summary}"
+            f"- {self._tr('任务', 'Task')} {entry.workpackage_index} | {entry.speaker} | {entry.headline} | {entry.summary}"
             for entry in entries
         )
 
     def _render_indexed_lines(self, items: list[str], *, prefix: str, limit: int) -> str:
         trimmed = [item for item in items if item.strip()][-limit:]
         if not trimmed:
-            return "- ??"
+            return self._tr("- 暂无。", "- None.")
         return "\n".join(
             f"- {self._state_item_label(prefix, index)}: {item}"
             for index, item in enumerate(trimmed, start=1)
@@ -2270,19 +2358,19 @@ class DiscussionOrchestrator:
             title = self._extract_assignment_part(parts[0]) or parts[0]
             owner_name = self._extract_assignment(
                 parts,
-                aliases=("Owner", "Primary", "Lead"),
+                aliases=("Owner", "Primary", "Lead", "主责", "负责人"),
                 fallback_index=1,
                 allow_provider_guess=True,
             )
             reviewer_name = self._extract_assignment(
                 parts,
-                aliases=("Reviewer", "Review", "Audit"),
+                aliases=("Reviewer", "Review", "Audit", "复核", "审核"),
                 fallback_index=2,
                 allow_provider_guess=True,
             )
             description = self._extract_assignment(
                 parts,
-                aliases=("Description", "Why", "Reason", "Notes"),
+                aliases=("Description", "Why", "Reason", "Rationale", "Notes", "说明", "原因"),
                 fallback_index=3,
                 allow_provider_guess=False,
             )
@@ -2445,17 +2533,34 @@ class DiscussionOrchestrator:
         return sections
 
     def _render_fallback_assignments(self) -> str:
+        if self.output_language == "zh":
+            return (
+                "研究目标：围绕用户任务完成问题定义、证据梳理、方法论证和结果整合。\n"
+                "领域判断：以用户问题和附件为准，保持通用学术研究框架。\n"
+                "1. 问题界定 | 主责: Qwen3-Max | 复核: DeepSeek | 说明: 先澄清研究问题、边界和资料缺口。\n"
+                "2. 证据梳理 | 主责: MiniMax | 复核: Qwen-Math | 说明: 提炼已有事实、数据和关键论据。\n"
+                "3. 方法论证 | 主责: Qwen-Math | 复核: Qwen3-Max | 说明: 设计分析框架、验证路径和评估标准。\n"
+                "4. 风险复核 | 主责: DeepSeek | 复核: MiniMax | 说明: 查找漏洞、反例和潜在幻觉。\n"
+                "派工原则：按专长分工，所有关键结论都要经过至少一次交叉复核。"
+            )
         return (
-            "研究目标：围绕用户任务完成问题定义、证据梳理、方法论证和结果整合。\n"
-            "领域判断：以用户问题和附件为准，保持通用学术研究框架。\n"
-            "1. 问题界定 | 主责: Qwen3-Max | 复核: DeepSeek | 说明: 先澄清研究问题、边界和资料缺口。\n"
-            "2. 证据梳理 | 主责: MiniMax | 复核: Qwen-Math | 说明: 提炼已有事实、数据和关键论据。\n"
-            "3. 方法论证 | 主责: Qwen-Math | 复核: Qwen3-Max | 说明: 设计分析框架、验证路径和评估标准。\n"
-            "4. 风险复核 | 主责: DeepSeek | 复核: MiniMax | 说明: 查找漏洞、反例和潜在幻觉。\n"
-            "派工原则：按专长分工，所有关键结论都要经过至少一次交叉复核。"
+            "Research Goal: define the problem, organize evidence, test methodology, and integrate results around the user's task.\n"
+            "Domain: stay within a general academic research framework and infer the field from the user request and attachments.\n"
+            "1. Problem framing | Owner: Qwen3-Max | Reviewer: DeepSeek | Description: clarify the research question, boundaries, and information gaps first.\n"
+            "2. Evidence mapping | Owner: MiniMax | Reviewer: Qwen-Math | Description: extract the key facts, data points, and supporting arguments from the materials.\n"
+            "3. Method reasoning | Owner: Qwen-Math | Reviewer: Qwen3-Max | Description: design the analytical framework, validation path, and execution logic.\n"
+            "4. Risk review | Owner: DeepSeek | Reviewer: MiniMax | Description: search for loopholes, counterexamples, hallucinations, and residual uncertainty.\n"
+            "Assignment Principle: divide work by specialty and require at least one cross-check for every important conclusion."
         )
 
     def _fallback_workpackages(self) -> list[WorkPackage]:
+        if self.output_language != "zh":
+            return [
+                WorkPackage(1, "Problem framing", "Clarify the task goal, boundary conditions, and information gaps", "Qwen3-Max", "DeepSeek"),
+                WorkPackage(2, "Evidence mapping", "Extract key facts, data points, and arguments from the attachments", "MiniMax", "Qwen-Math"),
+                WorkPackage(3, "Method reasoning", "Propose the analysis framework, validation method, and execution path", "Qwen-Math", "Qwen3-Max"),
+                WorkPackage(4, "Risk review", "Identify hallucinations, loopholes, counterexamples, and residual uncertainty", "DeepSeek", "MiniMax"),
+            ]
         return [
             WorkPackage(1, "问题界定", "明确任务目标、边界条件和资料缺口", "Qwen3-Max", "DeepSeek"),
             WorkPackage(2, "证据梳理", "提取附件中的关键事实、数据和论据", "MiniMax", "Qwen-Math"),
@@ -2465,20 +2570,31 @@ class DiscussionOrchestrator:
 
     def _fallback_log_line(self, message: DiscussionMessage, workpackage: str) -> str:
         return (
-            f"任务 {message.round_index}: {workpackage} | "
-            f"记录对象: {message.speaker}（{message.stage}）| "
-            f"摘要: {self._collapse_whitespace(self._truncate_text(message.content, 140))}"
+            f"{self._tr('任务', 'Task')} {message.round_index}: {workpackage} | "
+            f"{self._tr('记录对象', 'Logged role')}: {message.speaker} ({message.stage}) | "
+            f"{self._tr('摘要', 'Summary')}: {self._collapse_whitespace(self._truncate_text(message.content, 140))}"
         )
 
     def _build_fallback_report(self, state: MeetingState) -> str:
+        if self.output_language == "zh":
+            return (
+                "# 研究报告\n\n"
+                f"## 任务概述\n\n{state.goal or state.topic or '暂无'}\n\n"
+                "## 已固化共识\n\n"
+                f"{self._render_indexed_lines(state.stable_consensus, prefix='K', limit=8)}\n\n"
+                "## 关键争议\n\n"
+                f"{self._render_indexed_lines(state.conflicts, prefix='C', limit=6)}\n\n"
+                "## 后续动作\n\n"
+                f"{self._render_indexed_lines(state.action_items, prefix='A', limit=6)}"
+            )
         return (
-            "# 研究报告\n\n"
-            f"## 任务概述\n\n{state.goal or state.topic or '暂无'}\n\n"
-            "## 已固化共识\n\n"
+            "# Research Report\n\n"
+            f"## Task Overview\n\n{state.goal or state.topic or 'None'}\n\n"
+            "## Stable Consensus\n\n"
             f"{self._render_indexed_lines(state.stable_consensus, prefix='K', limit=8)}\n\n"
-            "## 关键争议\n\n"
+            "## Key Conflicts\n\n"
             f"{self._render_indexed_lines(state.conflicts, prefix='C', limit=6)}\n\n"
-            "## 后续动作\n\n"
+            "## Next Actions\n\n"
             f"{self._render_indexed_lines(state.action_items, prefix='A', limit=6)}"
         )
 
@@ -2636,16 +2752,16 @@ class DiscussionOrchestrator:
 
     def _stage_label(self, stage: str) -> str:
         mapping = {
-            "analysis": "Analysis log",
-            "review": "Review log",
-            "assignment": "Assignment log",
-            "coordination": "Coordination log",
-            "literature_review": "Literature review log",
-            "literature_analysis": "Literature analysis log",
-            "synthesis": "Synthesis log",
-            "coordination_review": "Host review log",
-            "followup_resolution": "Follow-up resolution log",
-            "log": "State log",
+            "analysis": self._tr("分析日志", "Analysis log"),
+            "review": self._tr("复核日志", "Review log"),
+            "assignment": self._tr("派工日志", "Assignment log"),
+            "coordination": self._tr("主持安排日志", "Coordination log"),
+            "literature_review": self._tr("文献综述日志", "Literature review log"),
+            "literature_analysis": self._tr("文献分析日志", "Literature analysis log"),
+            "synthesis": self._tr("综合日志", "Synthesis log"),
+            "coordination_review": self._tr("主持复核日志", "Host review log"),
+            "followup_resolution": self._tr("深挖收束日志", "Follow-up resolution log"),
+            "log": self._tr("状态日志", "State log"),
         }
         return mapping.get(stage, stage or "Log")
 
@@ -2657,6 +2773,17 @@ class DiscussionOrchestrator:
         return result
 
     def _build_cancelled_report(self, state: MeetingState, heading: str) -> str:
+        if self.output_language == "zh":
+            return (
+                "# 研究报告\n\n"
+                f"## 状态\n\n{heading}\n\n"
+                "## 已固化共识\n\n"
+                f"{self._render_indexed_lines(state.stable_consensus, prefix='K', limit=6)}\n\n"
+                "## 当前争议\n\n"
+                f"{self._render_indexed_lines(state.conflicts, prefix='C', limit=6)}\n\n"
+                "## 下一步动作\n\n"
+                f"{self._render_indexed_lines(state.action_items, prefix='A', limit=6)}"
+            )
         return (
             "# Research Report\n\n"
             f"## Status\n\n{heading}\n\n"
@@ -2669,6 +2796,15 @@ class DiscussionOrchestrator:
         )
 
     def _build_cancelled_minutes(self, state: MeetingState) -> str:
+        if self.output_language == "zh":
+            return (
+                "## 会议状态\n\n"
+                "讨论已被手动停止。\n\n"
+                "## 最近检查点\n\n"
+                f"{self._build_checkpoint_timeline(state)}\n\n"
+                "## 未决问题\n\n"
+                f"{self._render_indexed_lines(state.open_questions, prefix='Q', limit=6)}"
+            )
         return (
             "## Meeting Status\n\n"
             "The discussion was stopped manually.\n\n"

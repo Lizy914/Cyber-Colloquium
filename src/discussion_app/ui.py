@@ -7,7 +7,7 @@ from pathlib import Path
 from threading import Event
 
 from PySide6.QtCore import QEasingCurve, QObject, QPropertyAnimation, QThread, Qt, Signal
-from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap, QTextDocument
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
-    QTextBrowser,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -205,31 +204,22 @@ class PdfReaderWorker(QObject):
         self.finished.emit(results)
 
 
-class BubbleText(QTextBrowser):
+class BubbleText(QLabel):
     def __init__(self, body: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setOpenExternalLinks(True)
-        self.setFrameShape(QFrame.NoFrame)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.document().setDocumentMargin(0)
+        self.setWordWrap(True)
+        self.setTextFormat(Qt.RichText)
+        self.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setStyleSheet(
             "background: transparent; border: none; color: #E6F6FF; font-size: 13px; font-family: 'Microsoft YaHei UI';"
         )
-        self.setMarkdown(body)
-        self._fit_height()
-
-    def resizeEvent(self, event) -> None:  # noqa: ANN001
-        super().resizeEvent(event)
-        self._fit_height()
-
-    def _fit_height(self) -> None:
-        width = max(320, self.viewport().width())
-        self.document().setTextWidth(width)
-        height = int(self.document().size().height()) + 10
-        self.setMinimumHeight(max(52, height))
-        self.setMaximumHeight(max(52, height))
+        doc = QTextDocument(self)
+        doc.setDefaultFont(self.font())
+        doc.setMarkdown(body)
+        self.setText(doc.toHtml())
 
 
 class TimelineDivider(QFrame):
@@ -630,19 +620,24 @@ class MainWindow(QMainWindow):
         root.setHandleWidth(10)
         root.addWidget(self._build_left_panel())
         root.addWidget(self._build_right_panel())
-        root.setSizes([360, 1300])
+        root.setStretchFactor(0, 0)
+        root.setStretchFactor(1, 1)
+        root.setSizes([310, 1350])
         self.setCentralWidget(root)
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
         panel.setObjectName("leftPanel")
+        panel.setMinimumWidth(286)
+        panel.setMaximumWidth(352)
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(12)
 
         title = QLabel("Discussion Console")
-        title.setStyleSheet("font-size: 24px; font-weight: 800; font-family: 'Microsoft YaHei UI'; color: #F2FBFF;")
+        title.setStyleSheet("font-size: 22px; font-weight: 800; font-family: 'Microsoft YaHei UI'; color: #F2FBFF;")
         subtitle = QLabel("Configure duties and specialties so the models can work like an academic team: divide tasks, challenge claims, review literature, and correct each other.")
+        subtitle.setWordWrap(True)
         subtitle.setStyleSheet("font-size: 12px; font-family: 'Microsoft YaHei UI'; color: #9DB7D3;")
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -675,7 +670,7 @@ class MainWindow(QMainWindow):
         content_layout.setSpacing(10)
 
         for provider in self.providers:
-            card = ProviderConfigCard(provider, expanded=provider.enabled)
+            card = ProviderConfigCard(provider, expanded=False)
             self.provider_cards.append(card)
             content_layout.addWidget(card)
 
@@ -684,6 +679,8 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setMinimumHeight(240)
+        scroll.setMaximumHeight(412)
         scroll.setWidget(content)
         wrapper_layout.addWidget(scroll, 1)
 
@@ -700,8 +697,11 @@ class MainWindow(QMainWindow):
     def _build_attachment_group(self) -> QWidget:
         group = QGroupBox("Attachments")
         layout = QVBoxLayout(group)
+        layout.setSpacing(10)
 
         self.attachment_list = QListWidget()
+        self.attachment_list.setMinimumHeight(96)
+        self.attachment_list.setMaximumHeight(146)
         layout.addWidget(self.attachment_list)
 
         self.literature_review_check = QCheckBox("Enable literature review")
@@ -1469,7 +1469,6 @@ class MainWindow(QMainWindow):
         def _cleanup() -> None:
             if widget.graphicsEffect() is effect:
                 widget.setGraphicsEffect(None)
-            effect.deleteLater()
             if animation in self.entry_animations:
                 self.entry_animations.remove(animation)
 

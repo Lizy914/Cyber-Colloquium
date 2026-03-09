@@ -97,10 +97,15 @@ def _active_roles(providers: list[ProviderConfig]) -> list[str]:
 
 
 def _render_transcript(messages: list[DiscussionMessage]) -> str:
-    return "\n\n".join(
-        f"### {message.speaker} | {message.duty or 'Unlabeled duty'} | Task {message.round_index} | {message.stage or 'discussion'}\n\n{message.content}"
+    transcript = "\n\n".join(
+        (
+            f"### {message.speaker} | {message.duty or 'Unlabeled duty'} | "
+            f"Task {message.round_index} | {message.stage or 'discussion'}\n\n"
+            f"{message.content}"
+        )
         for message in messages
-    ) or "No discussion transcript was captured."
+    )
+    return transcript or "No discussion transcript was captured."
 
 
 def _render_literature_review_document(
@@ -256,11 +261,11 @@ def _render_named_items(items: list[str], label: str) -> str:
 
 
 def _checkpoint_label(raw_id: str) -> str:
-    digits = ''.join(char for char in raw_id if char.isdigit()) or raw_id
+    digits = "".join(char for char in raw_id if char.isdigit()) or raw_id
     return f"Checkpoint {digits}"
 
 
 def _fallback_evidence_label(evidence_id: str, source: str) -> str:
-    digits = ''.join(char for char in evidence_id if char.isdigit()) or evidence_id
-    cleaned_source = source.replace('|', ',').strip()
+    digits = "".join(char for char in evidence_id if char.isdigit()) or evidence_id
+    cleaned_source = source.replace("|", ",").strip()
     return f"Evidence {digits} ({cleaned_source})" if cleaned_source else f"Evidence {digits}"
