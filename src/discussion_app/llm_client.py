@@ -53,7 +53,7 @@ class OpenAICompatibleClient:
                 }
             )
             remaining_continuations -= 1
-            current_tokens = max(220, min(current_tokens, 700))
+            current_tokens = max(320, min(current_tokens, 1200))
 
         return "\n\n".join(chunk for chunk in chunks if chunk).strip()
 

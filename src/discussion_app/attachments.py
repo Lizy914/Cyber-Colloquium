@@ -91,9 +91,14 @@ def build_attachment_index(
     chunk_chars: int = 900,
     overlap_chars: int = 120,
     max_chunks_per_attachment: int = 32,
+    existing_snippets: list[AttachmentSnippet] | None = None,
 ) -> list[AttachmentSnippet]:
     snippets: list[AttachmentSnippet] = []
-    evidence_counter = 1
+    existing_lookup = {
+        _snippet_identity(snippet): snippet.evidence_id
+        for snippet in (existing_snippets or [])
+    }
+    evidence_counter = max((_evidence_number(snippet.evidence_id) for snippet in (existing_snippets or [])), default=0) + 1
 
     for attachment in attachments:
         if attachment.kind == "image":
@@ -105,9 +110,19 @@ def build_attachment_index(
 
         chunks = _chunk_text(text, chunk_chars=chunk_chars, overlap_chars=overlap_chars)[:max_chunks_per_attachment]
         for chunk_index, chunk in enumerate(chunks, start=1):
+            identity = _snippet_identity_fields(
+                attachment_name=attachment.display_name,
+                kind=attachment.kind,
+                chunk_index=chunk_index,
+                content=chunk,
+            )
+            evidence_id = existing_lookup.get(identity)
+            if evidence_id is None:
+                evidence_id = f"E{evidence_counter}"
+                evidence_counter += 1
             snippets.append(
                 AttachmentSnippet(
-                    evidence_id=f"E{evidence_counter}",
+                    evidence_id=evidence_id,
                     attachment_name=attachment.display_name,
                     kind=attachment.kind,
                     chunk_index=chunk_index,
@@ -116,7 +131,6 @@ def build_attachment_index(
                     keywords=_extract_keywords(f"{attachment.display_name} {chunk[:500]}"),
                 )
             )
-            evidence_counter += 1
 
     return snippets
 
@@ -279,6 +293,24 @@ def describe_snippet(snippet: AttachmentSnippet) -> str:
         parts.append(f"page {snippet.page_hint}")
     parts.append(f"chunk {snippet.chunk_index}")
     return f"Evidence {number} ({", ".join(parts)})"
+
+
+def _snippet_identity(snippet: AttachmentSnippet) -> tuple[str, str, int, str]:
+    return _snippet_identity_fields(
+        attachment_name=snippet.attachment_name,
+        kind=snippet.kind,
+        chunk_index=snippet.chunk_index,
+        content=snippet.content,
+    )
+
+
+def _snippet_identity_fields(*, attachment_name: str, kind: str, chunk_index: int, content: str) -> tuple[str, str, int, str]:
+    return (attachment_name, kind, chunk_index, _normalize_text(content))
+
+
+def _evidence_number(evidence_id: str) -> int:
+    digits = "".join(char for char in evidence_id if char.isdigit())
+    return int(digits) if digits else 0
 
 
 def _chunk_text(text: str, *, chunk_chars: int, overlap_chars: int) -> list[str]:

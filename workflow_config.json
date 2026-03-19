@@ -1,0 +1,168 @@
+{
+  "version": 7,
+  "discussion": {
+    "max_rounds": 8,
+    "checkpoint_every_n_rounds": 1,
+    "enable_reviewer_role": true,
+    "max_checkpoints": 8,
+    "max_followup_items": 3,
+    "max_followup_attempts": 2,
+    "max_literature_review_batches": 3
+  },
+  "routing": {
+    "default_roles": [
+      "Lead",
+      "Host",
+      "Literature Reviewer",
+      "Expert",
+      "Reporter"
+    ],
+    "parallel_roles": []
+  },
+  "context": {
+    "max_history_items": 12,
+    "summary_slots": [
+      "consensus",
+      "conflicts",
+      "open_questions",
+      "recent_updates",
+      "action_items"
+    ],
+    "max_evidence_cards": 24,
+    "max_log_entries": 40
+  },
+  "report": {
+    "include_consensus": true,
+    "include_open_questions": true,
+    "include_action_items": true
+  },
+  "notes": {
+    "include_role_labels": true
+  },
+  "tooling": {
+    "enable_arxiv_discovery": true,
+    "download_arxiv_pdfs": true,
+    "arxiv_max_results": 5,
+    "enable_python_artifact": true,
+    "enable_latex_artifact": true,
+    "enable_bibtex_artifact": true,
+    "enable_python_execution_test": true,
+    "enable_python_full_execution": true,
+    "python_execution_timeout_seconds": 20,
+    "python_full_execution_timeout_seconds": 300,
+    "python_workspace_input_limit_mb": 64,
+    "enable_latex_compile": true
+  },
+  "team_template": {
+    "name": "Cyber Colloquium Basic Team",
+    "description": "Default multi-role research team that preserves the current Cyber Colloquium workflow.",
+    "roles": [
+      {
+        "duty": "Lead",
+        "role_key": "moderator",
+        "label": "Lead",
+        "enabled": true,
+        "required": false,
+        "specialty_hint": "Task decomposition, delegation, and quality control"
+      },
+      {
+        "duty": "Host",
+        "role_key": "moderator",
+        "label": "Moderator",
+        "enabled": true,
+        "required": false,
+        "specialty_hint": "Coordination, pacing, and discussion control"
+      },
+      {
+        "duty": "Literature Reviewer",
+        "role_key": "reviewer",
+        "label": "Reviewer",
+        "enabled": true,
+        "required": false,
+        "specialty_hint": "Literature review, related-work mapping, and source digestion"
+      },
+      {
+        "duty": "Expert",
+        "role_key": "research_analyst",
+        "label": "Research Analyst",
+        "enabled": true,
+        "required": true,
+        "specialty_hint": "Analysis, evidence checking, and execution"
+      },
+      {
+        "duty": "Reporter",
+        "role_key": "notetaker",
+        "label": "Notetaker",
+        "enabled": true,
+        "required": false,
+        "specialty_hint": "Structured logging, synthesis, and final document writing"
+      }
+    ]
+  },
+  "workflow_template": {
+    "name": "Research Discussion Review Workflow",
+    "description": "Default configurable research workflow: ingest sources, discuss, review, update structured state, then generate notes and report.",
+    "stages": [
+      {
+        "key": "discover_literature",
+        "label": "Discover arXiv Literature",
+        "enabled": true,
+        "description": "Optionally search arXiv from the user request, download selected papers, and register metadata before ingesting sources."
+      },
+      {
+        "key": "ingest_source_material",
+        "label": "Ingest Source Material",
+        "enabled": true,
+        "description": "Prepare user question, source material, PDF reader context, and optional literature review input."
+      },
+      {
+        "key": "run_team_discussion",
+        "label": "Run Team Discussion",
+        "enabled": true,
+        "description": "Run lead delegation, host coordination, and primary analyst execution."
+      },
+      {
+        "key": "expand_literature_search",
+        "label": "Expand Literature Search",
+        "enabled": true,
+        "description": "Let the lead or experts propose targeted arXiv queries from discussion gaps, then refresh the evidence pool before reviewer pass."
+      },
+      {
+        "key": "run_reviewer_pass",
+        "label": "Run Reviewer Pass",
+        "enabled": true,
+        "description": "Run reviewer cross-checks for each workpackage when reviewer participation is enabled."
+      },
+      {
+        "key": "update_structured_state",
+        "label": "Update Structured State",
+        "enabled": true,
+        "description": "Run state consolidation, checkpoints, and unresolved-issue follow-ups."
+      },
+      {
+        "key": "run_experiment_cycle",
+        "label": "Run Experiment Cycle",
+        "enabled": true,
+        "description": "Generate executable experiment scaffolds, run authorized local tests, and feed outcomes back into the structured state."
+      },
+      {
+        "key": "generate_meeting_notes",
+        "label": "Generate Meeting Notes",
+        "enabled": true,
+        "description": "Generate meeting notes from the structured intermediate state."
+      },
+      {
+        "key": "generate_research_report",
+        "label": "Generate Research Report",
+        "enabled": true,
+        "description": "Generate the final research report from the structured intermediate state."
+      },
+      {
+        "key": "compile_latex_artifacts",
+        "label": "Compile LaTeX Artifacts",
+        "enabled": true,
+        "description": "Optionally build BibTeX and LaTeX export artifacts and compile them with local Tectonic when authorized."
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "providers": [
+    {
+      "name": "Lead",
+      "model": "your-lead-model",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "api_key": "",
+      "enabled": true,
+      "supports_vision": true,
+      "temperature": 0.6,
+      "duty": "Lead",
+      "specialty": "Task decomposition, delegation, and quality control"
+    },
+    {
+      "name": "Host",
+      "model": "your-host-model",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "api_key": "",
+      "enabled": true,
+      "supports_vision": false,
+      "temperature": 0.6,
+      "duty": "Host",
+      "specialty": "Coordination, workflow pacing, and meeting control"
+    },
+    {
+      "name": "Expert-1",
+      "model": "your-expert-model",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "api_key": "",
+      "enabled": true,
+      "supports_vision": true,
+      "temperature": 0.6,
+      "duty": "Expert",
+      "specialty": "Analysis, evidence checking, and structured reasoning"
+    },
+    {
+      "name": "Literature Reviewer",
+      "model": "your-reviewer-model",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "api_key": "",
+      "enabled": true,
+      "supports_vision": false,
+      "temperature": 0.6,
+      "duty": "Literature Reviewer",
+      "specialty": "Literature review, source checking, and related-work mapping"
+    },
+    {
+      "name": "Reporter",
+      "model": "your-reporter-model",
+      "base_url": "https://your-openai-compatible-endpoint/v1",
+      "api_key": "",
+      "enabled": true,
+      "supports_vision": true,
+      "temperature": 0.6,
+      "duty": "Reporter",
+      "specialty": "Structured logging, synthesis, and final report writing"
+    }
+  ]
+}

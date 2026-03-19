@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .state import DiscussionState, ResearchProject
 
 
 LEAD_DUTY = "Lead"
@@ -87,6 +91,7 @@ class StructuredLogEntry:
 
 @dataclass
 class MeetingCheckpoint:
+    # Legacy compatibility model. The active runtime state layer now lives in state.py.
     checkpoint_id: str
     label: str
     workpackage_index: int
@@ -99,6 +104,7 @@ class MeetingCheckpoint:
 
 @dataclass
 class MeetingState:
+    # Legacy compatibility model. The active runtime state layer now lives in state.py.
     topic: str = ""
     domain: str = ""
     goal: str = ""
@@ -139,4 +145,5 @@ class DiscussionResult:
     report_path: str = ""
     meeting_minutes_path: str = ""
     cancelled: bool = False
-    meeting_state: MeetingState | None = None
+    meeting_state: "DiscussionState | None" = None
+    research_project: "ResearchProject | None" = None

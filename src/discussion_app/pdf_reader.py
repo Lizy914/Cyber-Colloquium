@@ -1079,8 +1079,8 @@ def _truncate_text(text: str, limit: int) -> str:
 def pdf_reader_badge(path: Path) -> str:
     status = pdf_reader_status(path)
     mapping = {
-        "reader-ready": "reader ready",
-        "index-only": "index only",
-        "indexed": "indexed",
+        "reader-ready": "已就绪",
+        "index-only": "仅索引",
+        "indexed": "已索引",
     }
     return mapping.get(status, "")
